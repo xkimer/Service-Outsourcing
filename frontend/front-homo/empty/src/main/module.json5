@@ -1,0 +1,50 @@
+{
+  "module": {
+    "name": "empty",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EmptyAbility",
+    "deviceTypes": [
+      "phone"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EmptyAbility",
+        "srcEntry": "./ets/emptyability/EmptyAbility.ets",
+        "description": "$string:EmptyAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EmptyAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
+      }
+    ],
+    "extensionAbilities": [
+      {
+        "name": "EmptyBackupAbility",
+        "srcEntry": "./ets/emptybackupability/EmptyBackupAbility.ets",
+        "type": "backup",
+        "exported": false,
+        "metadata": [
+          {
+            "name": "ohos.extension.backup",
+            "resource": "$profile:backup_config"
+          }
+        ],
+      }
+    ]
+  }
+}
