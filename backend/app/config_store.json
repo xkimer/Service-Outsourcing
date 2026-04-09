@@ -1,23 +1,9 @@
 {
   "models": [
-    {
-      "name": "冰箱",
-      "model": "BCD-520W",
-      "standardLabel": "A++",
-      "enabled": true
-    },
-    {
-      "name": "冰箱",
-      "model": "A",
-      "standardLabel": "A++",
-      "enabled": true
-    }
+    {}
   ],
-  "positionTolerance": 12,
-  "sensitivity": "高",
-  "lightCompensation": 1,
-  "camera": {
-    "exposure": -1,
-    "resolution": "1920x1080"
-  }
+  "positionTolerance": 0,
+  "sensitivity": "string",
+  "lightCompensation": 0,
+  "camera": {}
 }

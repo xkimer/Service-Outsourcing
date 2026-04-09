@@ -2,7 +2,6 @@ from datetime import datetime, date, time, timedelta
 from sqlalchemy.orm import Session
 
 from . import models, schemas
-from .utils import judge_qualified
 
 
 def create_detection_record(db: Session, record: schemas.DetectionRecordCreate):
@@ -10,10 +9,22 @@ def create_detection_record(db: Session, record: schemas.DetectionRecordCreate):
         device_id=record.device_id,
         batch_id=record.batch_id,
         image_path=record.image_path,
-        energy_level=record.energy_level,
+
+        class_name=record.class_name,
         defect_type=record.defect_type,
         confidence=record.confidence,
-        is_qualified=judge_qualified(record.energy_level)
+        status=record.status,
+
+        position_status=record.position_status,
+        position_x=record.position_x,
+        position_y=record.position_y,
+
+        bbox_x1=record.bbox_x1,
+        bbox_y1=record.bbox_y1,
+        bbox_x2=record.bbox_x2,
+        bbox_y2=record.bbox_y2,
+
+        has_defect=record.has_defect,
     )
     db.add(db_record)
     db.commit()
@@ -21,8 +32,44 @@ def create_detection_record(db: Session, record: schemas.DetectionRecordCreate):
     return db_record
 
 
+def save_analyze_result(
+    db: Session,
+    image_path: str,
+    analyze_result: dict,
+    device_id: str = "",
+    batch_id: str = "",
+):
+    bbox = analyze_result.get("bbox", [0, 0, 0, 0])
+    if len(bbox) != 4:
+        bbox = [0, 0, 0, 0]
+
+    record = schemas.DetectionRecordCreate(
+        device_id=device_id,
+        batch_id=batch_id,
+        image_path=image_path,
+
+        class_name=analyze_result.get("className", "unknown"),
+        defect_type=analyze_result.get("defectType", "未知"),
+        confidence=float(analyze_result.get("confidence", 0.0)),
+        status=analyze_result.get("status", "NG"),
+
+        position_status=analyze_result.get("positionStatus", "未知"),
+        position_x=int(analyze_result.get("positionX", 0)),
+        position_y=int(analyze_result.get("positionY", 0)),
+
+        bbox_x1=float(bbox[0]),
+        bbox_y1=float(bbox[1]),
+        bbox_x2=float(bbox[2]),
+        bbox_y2=float(bbox[3]),
+
+        has_defect=bool(analyze_result.get("hasDefect", True)),
+    )
+
+    return create_detection_record(db, record)
+
+
 # =========================
-# 原有接口：历史 + 统计
+# 历史 + 统计
 # =========================
 def get_history_with_stats(db: Session, skip=0, limit=100, device_id=None, batch_id=None):
     query = db.query(models.DetectionRecord)
@@ -37,8 +84,8 @@ def get_history_with_stats(db: Session, skip=0, limit=100, device_id=None, batch
 
     all_items = query.all()
     total_scanned = len(all_items)
-    fail_count = sum(1 for item in all_items if item.is_qualified is False)
-    pass_count = total_scanned - fail_count
+    pass_count = sum(1 for item in all_items if item.status == "OK")
+    fail_count = total_scanned - pass_count
     pass_rate = round(pass_count / total_scanned, 3) if total_scanned else 0.0
 
     return {
@@ -82,16 +129,15 @@ def build_filtered_query(
         query = query.filter(models.DetectionRecord.created_at >= start_dt)
 
     if end_date:
-        # 结束日期按“当天 23:59:59”算，最简单是 < 次日 00:00:00
         end_dt = datetime.combine(end_date + timedelta(days=1), time.min)
         query = query.filter(models.DetectionRecord.created_at < end_dt)
 
     status_filter = (status_filter or "ALL").upper()
 
     if status_filter == "OK":
-        query = query.filter(models.DetectionRecord.is_qualified.is_(True))
+        query = query.filter(models.DetectionRecord.status == "OK")
     elif status_filter == "NG":
-        query = query.filter(models.DetectionRecord.is_qualified.is_(False))
+        query = query.filter(models.DetectionRecord.status == "NG")
 
     return query
 

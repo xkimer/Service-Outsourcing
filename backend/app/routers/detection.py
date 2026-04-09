@@ -8,11 +8,10 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, 
 from sqlalchemy.orm import Session
 
 from .. import crud, schemas
+from ..ml_service import infer_image
 from ..database import get_db
 from ..utils import (
     generate_filename,
-    build_ocr_text,
-    normalize_defect_type,
     load_config,
     save_config
 )
@@ -38,88 +37,71 @@ def build_image_url(request: Request, image_path: str) -> str:
 
 
 def pick_preset_model(record) -> str:
-    """
-    你当前数据库没有 presetModel 字段
-    这里只能先做兼容映射
-    优先用 batch_id，其次 device_id
-    后续 ML / 配置完成后再替换成真实型号字段
-    """
-    return record.batch_id or record.device_id or "未配置"
-
-
-def to_status(record) -> str:
-    return "OK" if record.is_qualified else "NG"
-
-
-def to_position_status(record) -> str:
-    """
-    当前位置状态数据库里也没有真实字段
-    先临时返回“正常”
-    后续嵌入式 / 视觉定位就绪后再换真实值
-    """
-    return "正常"
+    return record.batch_id or record.device_id or "能效标签"
 
 
 def format_current_record(record, request: Request):
     return {
-        "status": to_status(record),
-        "ocrText": build_ocr_text(record.energy_level),
+        "status": record.status,
+        "ocrText": record.class_name,
         "presetModel": pick_preset_model(record),
-        "isMatch": bool(record.is_qualified),   # 临时兼容
-        "defectType": normalize_defect_type(record.defect_type),
-        "positionStatus": to_position_status(record),
-        "positionX": 0,   # 临时占位
-        "positionY": 0,   # 临时占位
+        "isMatch": record.status == "OK",
+        "defectType": record.defect_type,
+        "positionStatus": record.position_status,
+        "positionX": record.position_x,
+        "positionY": record.position_y,
         "timestamp": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "imageUrl": build_image_url(request, record.image_path),
     }
 
 
 def format_recent_record(record):
+    model = pick_preset_model(record)
     return {
         "timestamp": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "presetModel": pick_preset_model(record),
-        "ocrText": build_ocr_text(record.energy_level),
-        "status": to_status(record),
-        "defectType": normalize_defect_type(record.defect_type),
-        "positionStatus": to_position_status(record),
+        "presetModel": model,
+        "productModel": model,
+        "ocrText": record.class_name,
+        "status": record.status,
+        "defectType": record.defect_type,
+        "positionStatus": record.position_status,
     }
 
 
 def format_history_record(record, request: Request):
+    model = pick_preset_model(record)
     return {
         "timestamp": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "presetModel": pick_preset_model(record),
-        "ocrText": build_ocr_text(record.energy_level),
-        "status": to_status(record),
-        "defectType": normalize_defect_type(record.defect_type),
-        "positionStatus": to_position_status(record),
+        "presetModel": model,
+        "productModel": model,
+        "ocrText": record.class_name,
+        "status": record.status,
+        "defectType": record.defect_type,
+        "positionStatus": record.position_status,
         "imageUrl": build_image_url(request, record.image_path),
     }
 
 
 def format_statistics_record(record):
-    defect_type = normalize_defect_type(record.defect_type)
-
     return {
         "timestamp": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "presetModel": pick_preset_model(record),
-        "status": to_status(record),
-        "hasDefect": defect_type != "无",
-        "defectType": defect_type,
-        "positionStatus": to_position_status(record),
+        "status": record.status,
+        "hasDefect": record.has_defect,
+        "defectType": record.defect_type if record.has_defect else "",
+        "positionStatus": record.position_status,
     }
 
 
 # =========================
-# 你原有接口（保留，别动前面的联调）
+# 文件上传接口（保留）
 # =========================
 @router.post("/api/v1/detect/upload_image")
 async def upload_image(file: UploadFile = File(...)):
-    ALLOWED_EXT = {".jpg", ".jpeg", ".png"}
+    allowed_ext = {".jpg", ".jpeg", ".png"}
     ext = os.path.splitext(file.filename)[1].lower()
 
-    if ext not in ALLOWED_EXT:
+    if ext not in allowed_ext:
         raise HTTPException(status_code=400, detail=f"Invalid image format: {ext}")
 
     filename = generate_filename(file.filename)
@@ -134,11 +116,17 @@ async def upload_image(file: UploadFile = File(...)):
     }
 
 
+# =========================
+# 手动写记录接口（改成新版真实字段）
+# =========================
 @router.post("/api/v1/detect/record", response_model=schemas.DetectionRecordOut)
 def create_record(record: schemas.DetectionRecordCreate, db: Session = Depends(get_db)):
     return crud.create_detection_record(db, record)
 
 
+# =========================
+# 旧历史接口（保留）
+# =========================
 @router.get("/api/v1/detect/history", response_model=schemas.HistoryResponse)
 def get_legacy_history(
     page: int = 1,
@@ -160,7 +148,18 @@ def get_legacy_history(
 def get_current(request: Request, db: Session = Depends(get_db)):
     record = crud.get_latest_record(db)
     if not record:
-        raise HTTPException(status_code=404, detail="No detection record found")
+        return {
+            "status": "NG",
+            "ocrText": "",
+            "presetModel": "",
+            "isMatch": False,
+            "defectType": "无",
+            "positionStatus": "正常",
+            "positionX": 0,
+            "positionY": 0,
+            "timestamp": "",
+            "imageUrl": "",
+        }
     return format_current_record(record, request)
 
 
@@ -218,6 +217,7 @@ def post_config(config: schemas.ConfigResponse):
 
 # 6. 获取统计数据
 @router.get("/api/statistics", response_model=List[schemas.StatisticsItemResponse])
+@router.get("/api/statistic", response_model=List[schemas.StatisticsItemResponse])
 def get_statistics(
     startDate: Optional[date] = Query(None),
     endDate: Optional[date] = Query(None),
@@ -229,3 +229,40 @@ def get_statistics(
         end_date=endDate
     )
     return [format_statistics_record(r) for r in records]
+
+
+# 7. 上传图片 + 推理 + 自动入库
+@router.post("/api/v1/detect/analyze_image", response_model=schemas.MlAnalyzeResponse)
+async def analyze_image(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    allowed_ext = {".jpg", ".jpeg", ".png"}
+    ext = os.path.splitext(file.filename)[1].lower()
+
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail=f"Invalid image format: {ext}")
+
+    filename = generate_filename(file.filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    config = load_config()
+    position_tolerance = config.get("positionTolerance", 10)
+
+    result = infer_image(
+        image_path=file_path,
+        position_tolerance=position_tolerance
+    )
+
+    db_record = crud.save_analyze_result(
+        db=db,
+        image_path=f"/static/uploads/{filename}",
+        analyze_result=result
+    )
+
+    result["imageUrl"] = build_image_url(request, db_record.image_path)
+    return result

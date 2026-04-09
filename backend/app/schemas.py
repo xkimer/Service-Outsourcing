@@ -4,25 +4,50 @@ from datetime import datetime
 
 
 # =========================
-# 原有检测记录模型
+# 新版真实检测记录模型
 # =========================
 class DetectionRecordBase(BaseModel):
-    device_id: str
-    batch_id: str
+    device_id: str = ""
+    batch_id: str = ""
     image_path: str
-    energy_level: float
+
+    class_name: str
     defect_type: str
     confidence: float
-    is_qualified: bool
+    status: str
+
+    position_status: str
+    position_x: int
+    position_y: int
+
+    bbox_x1: float
+    bbox_y1: float
+    bbox_x2: float
+    bbox_y2: float
+
+    has_defect: bool
 
 
 class DetectionRecordCreate(BaseModel):
-    device_id: str
-    batch_id: str
+    device_id: str = ""
+    batch_id: str = ""
     image_path: str
-    energy_level: float
+
+    class_name: str
     defect_type: str
     confidence: float
+    status: str
+
+    position_status: str = "正常"
+    position_x: int = 0
+    position_y: int = 0
+
+    bbox_x1: float = 0.0
+    bbox_y1: float = 0.0
+    bbox_x2: float = 0.0
+    bbox_y2: float = 0.0
+
+    has_defect: bool = False
 
 
 class DetectionRecordOut(DetectionRecordBase):
@@ -63,6 +88,7 @@ class CurrentResultResponse(BaseModel):
 class RecentRecordResponse(BaseModel):
     timestamp: str
     presetModel: str
+    productModel: str | None = None
     ocrText: str
     status: str
     defectType: str
@@ -72,6 +98,7 @@ class RecentRecordResponse(BaseModel):
 class HistoryRecordResponse(BaseModel):
     timestamp: str
     presetModel: str
+    productModel: str | None = None
     ocrText: str
     status: str
     defectType: str
@@ -89,7 +116,7 @@ class StatisticsItemResponse(BaseModel):
     presetModel: str
     status: str
     hasDefect: bool
-    defectType: str
+    defectType: str = ""
     positionStatus: str
 
 
@@ -104,3 +131,16 @@ class ConfigResponse(BaseModel):
 class SaveConfigResponse(BaseModel):
     success: bool
     message: str
+
+
+class MlAnalyzeResponse(BaseModel):
+    status: str
+    className: str
+    defectType: str
+    confidence: float
+    positionStatus: str
+    positionX: int
+    positionY: int
+    bbox: List[float]
+    hasDefect: bool
+    imageUrl: str
