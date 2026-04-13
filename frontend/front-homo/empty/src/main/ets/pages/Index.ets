@@ -2,6 +2,7 @@ import router from '@ohos.router';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import http from '@ohos.net.http';
+import util from '@ohos.util';
 import { apiGet, BASE_URL } from '../common/Api';
 import { WebSocketClient } from '../common/WebSocketClient';
 
@@ -120,52 +121,138 @@ struct Index {
     } catch (e) { /* user cancelled */ }
   }
 
+  encodeUtf8(text: string): Uint8Array {
+    const encoder = new util.TextEncoder();
+    return encoder.encodeInto(text);
+  }
+
+  mergeBytes(parts: Uint8Array[]): ArrayBuffer {
+    let total = 0;
+    for (let i = 0; i < parts.length; i++) {
+      total += parts[i].length;
+    }
+
+    const merged = new Uint8Array(total);
+    let offset = 0;
+
+    for (let i = 0; i < parts.length; i++) {
+      merged.set(parts[i], offset);
+      offset += parts[i].length;
+    }
+
+    return merged.buffer as ArrayBuffer;
+  }
+
   async doDetect() {
-    if (this.previewUri === '' || this.detecting) return;
+    if (this.previewUri === '' || this.detecting) {
+      return;
+    }
+
     this.detecting = true;
+
+    let tmpPath: string = '';
+    let req: http.HttpRequest | null = null;
+
     try {
-      // 读取文件到缓存目录以便上传
-      let context = getContext(this);
-      let srcFile = await fs.open(this.previewUri, fs.OpenMode.READ_ONLY);
-      let cacheDir = context.cacheDir;
-      let tmpPath = cacheDir + '/upload_' + Date.now() + '.jpg';
-      let dstFile = await fs.open(tmpPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
-      let buf = new ArrayBuffer(4 * 1024 * 1024); // 4MB buffer
-      let readLen = await fs.read(srcFile.fd, buf);
-      await fs.write(dstFile.fd, buf, { length: readLen });
+      const context = getContext(this);
+
+      // 1. 先把选择的图片复制到应用 cache 目录
+      const srcFile = await fs.open(this.previewUri, fs.OpenMode.READ_ONLY);
+
+      const fileName: string = 'upload_' + Date.now() + '.jpg';
+      tmpPath = context.cacheDir + '/' + fileName;
+
+      const dstFile = await fs.open(tmpPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+
+      const copyBuf = new ArrayBuffer(4 * 1024 * 1024);
+      const copyLen = await fs.read(srcFile.fd, copyBuf);
+      await fs.write(dstFile.fd, copyBuf, { length: copyLen });
+
       await fs.close(srcFile);
       await fs.close(dstFile);
 
-      // multipart/form-data 上传
-      let req = http.createHttp();
-      let boundary = '----FormBoundary' + Date.now();
-      let fileData = await fs.readText(tmpPath);
+      // 2. 再把 cache 里的 jpg 按“二进制”读出来
+      const uploadFile = await fs.open(tmpPath, fs.OpenMode.READ_ONLY);
+      const fileBuf = new ArrayBuffer(4 * 1024 * 1024);
+      const fileLen = await fs.read(uploadFile.fd, fileBuf);
+      await fs.close(uploadFile);
 
-      // 使用 request 上传
-      let uploadReq = http.createHttp();
-      let resp = await new Promise<string>((resolve, reject) => {
-        uploadReq.request(BASE_URL + '/api/ml/detect', {
-          method: http.RequestMethod.POST,
-          header: { 'Content-Type': 'multipart/form-data' },
-          multiFormDataList: [{
-            name: 'file',
-            contentType: 'image/jpeg',
-            remoteFileName: 'detect.jpg',
-            filePath: tmpPath
-          }]
-        }, (err, data) => {
-          if (!err && data.responseCode === 200) {
-            resolve(data.result as string);
-          } else {
-            reject(new Error(err?.message || `HTTP ${data?.responseCode}`));
+      const fileBytes = new Uint8Array(fileBuf.slice(0, fileLen));
+
+      // 3. 手动拼 multipart/form-data body
+      const boundary: string = '----HarmonyBoundary' + Date.now();
+      const crlf: string = '\r\n';
+
+      const partHeader: string =
+        '--' + boundary + crlf +
+          'Content-Disposition: form-data; name="file"; filename="detect.jpg"' + crlf +
+          'Content-Type: image/jpeg' + crlf + crlf;
+
+      const partFooter: string =
+        crlf + '--' + boundary + '--' + crlf;
+
+      const headerBytes = this.encodeUtf8(partHeader);
+      const footerBytes = this.encodeUtf8(partFooter);
+
+      const requestBody: ArrayBuffer = this.mergeBytes([
+        headerBytes,
+        fileBytes,
+        footerBytes
+      ]);
+
+      // 4. 发 HTTP 请求
+      req = http.createHttp();
+
+      const respText: string = await new Promise<string>((resolve, reject) => {
+        if (req === null) {
+          reject(new Error('HTTP request not created'));
+          return;
+        }
+
+        req.request(
+          BASE_URL + '/api/ml/detect',
+          {
+            method: http.RequestMethod.POST,
+            header: {
+              'Content-Type': 'multipart/form-data; boundary=' + boundary,
+              'Accept': 'application/json'
+            },
+            extraData: requestBody,
+            connectTimeout: 60000,
+            readTimeout: 60000
+          },
+          (err, data) => {
+            try {
+              if (err) {
+                reject(new Error(JSON.stringify(err)));
+                return;
+              }
+
+              if (!data || data.responseCode !== 200) {
+                reject(new Error('HTTP ' + (data ? data.responseCode : 'unknown')));
+                return;
+              }
+
+              if (typeof data.result === 'string') {
+                resolve(data.result as string);
+              } else {
+                resolve(JSON.stringify(data.result));
+              }
+            } catch (e) {
+              reject(e);
+            }
           }
-          uploadReq.destroy();
-        });
+        );
       });
 
-      let d = JSON.parse(resp) as Record<string, string | number | boolean>;
+      req.destroy();
+      req = null;
+
+      // 5. 解析后端返回
+      const d = JSON.parse(respText) as Record<string, string | number | boolean>;
+
       this.currentResult = {
-        status: (d['status'] as string) || (d['is_qualified'] ? 'OK' : 'NG'),
+        status: (d['status'] as string) || ((d['is_qualified'] as boolean) ? 'OK' : 'NG'),
         ocrText: (d['ocr_text'] as string) || '',
         presetModel: (d['preset_model'] as string) || '',
         isMatch: (d['is_qualified'] as boolean) || false,
@@ -178,16 +265,38 @@ struct Index {
         confidence: (d['confidence'] as number) || 0
       };
 
-      // 清理临时文件
-      try { await fs.unlink(tmpPath); } catch (e) {}
+      await this.loadData();
 
-      // 刷新最近记录
-      this.loadData();
-      AlertDialog.show({ message: d['is_qualified'] ? '检测合格 ✓' : '检测不合格 ✗' });
+      AlertDialog.show({
+        message: (d['is_qualified'] as boolean) ? '检测合格 ✓' : '检测不合格 ✗'
+      });
     } catch (e) {
-      AlertDialog.show({ message: '检测失败: ' + (e as Error).message });
+      let errMsg: string = '未知错误';
+
+      if (e instanceof Error) {
+        errMsg = e.message;
+      } else {
+        errMsg = JSON.stringify(e);
+      }
+
+      AlertDialog.show({
+        message: '检测失败: ' + errMsg
+      });
+    } finally {
+      if (req !== null) {
+        try {
+          req.destroy();
+        } catch (e) {}
+      }
+
+      if (tmpPath !== '') {
+        try {
+          await fs.unlink(tmpPath);
+        } catch (e) {}
+      }
+
+      this.detecting = false;
     }
-    this.detecting = false;
   }
 
   onTabChange(idx: number) {
