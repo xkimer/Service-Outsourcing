@@ -266,3 +266,57 @@ async def analyze_image(
 
     result["imageUrl"] = build_image_url(request, db_record.image_path)
     return result
+
+# =========================
+# 临时联调接口：HTTP ping
+# =========================
+@router.get("/api/v1/detect/ping")
+def ping():
+    return {
+        "code": 0,
+        "message": "backend ok"
+    }
+
+
+# =========================
+# 临时联调接口：原始字节上传
+# Content-Type: application/octet-stream
+# =========================
+@router.post("/api/v1/detect/upload_bytes")
+async def upload_bytes(
+    request: Request,
+    device_id: str = Query("board01"),
+    batch_id: str = Query("debug"),
+    ext: str = Query("jpg")
+):
+    body = await request.body()
+
+    if not body:
+        raise HTTPException(status_code=400, detail="请求体为空")
+
+    # 只允许常见图片后缀
+    ext = ext.strip().lower().lstrip(".")
+    allowed_ext = {"jpg", "jpeg", "png"}
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail=f"不支持的图片后缀: {ext}")
+
+    filename = generate_filename(f"board_upload.{ext}")
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    with open(file_path, "wb") as f:
+        f.write(body)
+
+    relative_path = f"/static/uploads/{filename}"
+
+    # 第一阶段先返回固定结果，把“板子 -> 后端”链路打通
+    return {
+        "code": 0,
+        "message": "上传成功",
+        "result": "OK",
+        "device_id": device_id,
+        "batch_id": batch_id,
+        "image_name": filename,
+        "image_url": relative_path,
+        "imageUrl": build_image_url(request, relative_path),
+        "size": len(body)
+    }
