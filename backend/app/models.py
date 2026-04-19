@@ -1,6 +1,8 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime
 from datetime import datetime
 from .database import Base
+from zoneinfo import ZoneInfo
+from datetime import datetime
 
 
 class DetectionRecord(Base):
@@ -31,4 +33,9 @@ class DetectionRecord(Base):
 
     has_defect = Column(Boolean, nullable=False, default=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None),
+        nullable=False,
+        index=True
+    )

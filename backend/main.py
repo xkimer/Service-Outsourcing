@@ -7,7 +7,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.database import engine, Base
-from app.routers import detection, display
+from app.routers import detection, display, config
 
 app = FastAPI(
     title="Detection Backend",
@@ -36,6 +36,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # 路由
 app.include_router(detection.router)
 app.include_router(display.router)
+app.include_router(config.router)
 
 # =========================
 # GPIO <-> App 桥接状态
@@ -64,6 +65,7 @@ def bridge_trigger():
         bridge_state["result"] = "busy"
     return "ok"
 
+
 @app.get("/bridge/next_trigger", response_class=PlainTextResponse)
 def bridge_next_trigger():
     """
@@ -76,6 +78,7 @@ def bridge_next_trigger():
             bridge_state["pending"] = False
             return "1"
         return "0"
+
 
 @app.post("/bridge/result", response_class=PlainTextResponse)
 def bridge_result(value: str = Query(...)):
@@ -91,6 +94,7 @@ def bridge_result(value: str = Query(...)):
         bridge_state["result"] = value
     return "ok"
 
+
 @app.get("/bridge/result", response_class=PlainTextResponse)
 def bridge_get_result():
     """
@@ -98,6 +102,7 @@ def bridge_get_result():
     """
     with bridge_lock:
         return bridge_state["result"]
+
 
 @app.post("/bridge/reset", response_class=PlainTextResponse)
 def bridge_reset():

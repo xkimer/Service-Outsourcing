@@ -68,10 +68,26 @@ def format_recent_record(record):
     }
 
 
+from datetime import timezone
+from zoneinfo import ZoneInfo
+
 def format_history_record(record, request: Request):
     model = pick_preset_model(record)
+
+    dt = record.created_at
+    if dt is None:
+        timestamp = ""
+    else:
+        # 你当前这批旧数据基本都是“无时区的 UTC 时间”
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        # 转成北京时间
+        dt = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+        timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
+
     return {
-        "timestamp": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": timestamp,
         "presetModel": model,
         "productModel": model,
         "ocrText": record.class_name,
@@ -147,6 +163,13 @@ def get_legacy_history(
 @router.get("/api/current", response_model=schemas.CurrentResultResponse)
 def get_current(request: Request, db: Session = Depends(get_db)):
     record = crud.get_latest_record(db)
+    print(
+        "/api/current latest:",
+        record.id if record else None,
+        record.status if record else None,
+        record.class_name if record else None
+    )
+
     if not record:
         return {
             "status": "NG",
@@ -267,6 +290,7 @@ async def analyze_image(
     result["imageUrl"] = build_image_url(request, db_record.image_path)
     return result
 
+
 # =========================
 # 临时联调接口：HTTP ping
 # =========================
@@ -287,14 +311,14 @@ async def upload_bytes(
     request: Request,
     device_id: str = Query("board01"),
     batch_id: str = Query("debug"),
-    ext: str = Query("jpg")
+    ext: str = Query("jpg"),
+    db: Session = Depends(get_db)
 ):
     body = await request.body()
 
     if not body:
         raise HTTPException(status_code=400, detail="请求体为空")
 
-    # 只允许常见图片后缀
     ext = ext.strip().lower().lstrip(".")
     allowed_ext = {"jpg", "jpeg", "png"}
     if ext not in allowed_ext:
@@ -308,15 +332,47 @@ async def upload_bytes(
 
     relative_path = f"/static/uploads/{filename}"
 
-    # 第一阶段先返回固定结果，把“板子 -> 后端”链路打通
-    return {
-        "code": 0,
-        "message": "上传成功",
-        "result": "OK",
-        "device_id": device_id,
-        "batch_id": batch_id,
-        "image_name": filename,
-        "image_url": relative_path,
-        "imageUrl": build_image_url(request, relative_path),
-        "size": len(body)
-    }
+    # 读取配置
+    config = load_config()
+    position_tolerance = config.get("positionTolerance", 10)
+
+    # 真正推理
+    result = infer_image(
+        image_path=file_path,
+        position_tolerance=position_tolerance
+    )
+
+    # 自动入库 + 调试打印
+    print("=== save result start ===")
+    print("infer result:", result)
+
+    db_record = crud.save_analyze_result(
+        db=db,
+        image_path=relative_path,
+        analyze_result=result
+    )
+
+    print("saved db_record id:", db_record.id)
+    print("saved db_record status:", db_record.status)
+    print("saved db_record class_name:", db_record.class_name)
+    print("saved db_record defect_type:", db_record.defect_type)
+    print("saved db_record created_at:", db_record.created_at)
+
+    latest = crud.get_latest_record(db)
+    print(
+        "latest after save:",
+        latest.id if latest else None,
+        latest.status if latest else None,
+        latest.class_name if latest else None
+    )
+    print("=== save result end ===")
+
+    # 同时兼容 image_url / imageUrl
+    full_image_url = build_image_url(request, db_record.image_path)
+    result["device_id"] = device_id
+    result["batch_id"] = batch_id
+    result["image_name"] = filename
+    result["image_url"] = relative_path
+    result["imageUrl"] = full_image_url
+
+    return result

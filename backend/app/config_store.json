@@ -2,8 +2,11 @@
   "models": [
     {}
   ],
-  "positionTolerance": 0,
+  "positionTolerance": 22,
   "sensitivity": "string",
-  "lightCompensation": 0,
-  "camera": {}
+  "lightCompensation": -2,
+  "camera": {
+    "exposure": 0,
+    "resolution": "1280x720"
+  }
 }
